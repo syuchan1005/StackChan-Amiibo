@@ -12,3 +12,5 @@
 #include "app_app_center/app_app_center.h"
 #include "app_ezdata/app_ezdata.h"
 #include "app_dance/app_dance.h"
+#include "app_amiibo/app_amiibo.h"
+

@@ -23,12 +23,11 @@ bool Hal::updateFirmware(std::function<void(std::string_view)> onLog)
         return false;
     }
 
-    if (!ota.HasNewVersion()) {
-        ota.MarkCurrentVersionValid();
-        mclog::tagInfo(_tag, "no new firmware version available");
-        onLog("Already up to date");
-        return true;
-    }
+    // if (!ota.HasNewVersion())
+    ota.MarkCurrentVersionValid();
+    mclog::tagInfo(_tag, "no new firmware version available");
+    onLog("Already up to date");
+    return true;
 
     const std::string &firmware_url     = ota.GetFirmwareUrl();
     const std::string &firmware_version = ota.GetFirmwareVersion();
