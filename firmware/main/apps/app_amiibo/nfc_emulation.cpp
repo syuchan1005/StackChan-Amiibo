@@ -33,6 +33,10 @@ static const uint8_t dummy_signature[32] = {
 Emulator::~Emulator()
 {
     stop();
+    if (_mutex) {
+        vSemaphoreDelete(_mutex);
+        _mutex = nullptr;
+    }
 }
 
 extern const uint8_t locked_secret_bin_start[] asm("_binary_locked_secret_bin_start");
@@ -40,31 +44,77 @@ extern const uint8_t locked_secret_bin_end[]   asm("_binary_locked_secret_bin_en
 extern const uint8_t unfixed_info_bin_start[]  asm("_binary_unfixed_info_bin_start");
 extern const uint8_t unfixed_info_bin_end[]    asm("_binary_unfixed_info_bin_end");
 
-bool Emulator::init(i2c_master_bus_handle_t i2c, const uint8_t* bin_data, size_t bin_size)
+bool Emulator::init(i2c_master_bus_handle_t i2c)
 {
-    ESP_LOGI(TAG, "Initializing Emulator with Amiibo BIN data (%u bytes)", bin_size);
-
+    if (!_mutex) {
+        _mutex = xSemaphoreCreateRecursiveMutex();
+    }
+    
+    _i2c = i2c;
     if (!i2c) {
-        ESP_LOGE(TAG, "I2C bus is null");
+        ESP_LOGE(TAG, "I2C bus handle is null!");
         return false;
     }
 
     _units = std::make_unique<m5::unit::UnitUnified>();
     _unit = std::make_unique<m5::unit::UnitNFC>();
-    _emu_a = std::make_unique<m5::nfc::EmulationLayerA>(*_unit);
-
+    
+    // Enable debug logging to see M5UnitUnified internal logs
+    esp_log_level_set("app_amiibo", ESP_LOG_VERBOSE);
+    esp_log_level_set("M5UnitUnified", ESP_LOG_VERBOSE);
+    esp_log_level_set("M5UnitNFC", ESP_LOG_VERBOSE);
+    
     auto cfg = _unit->config();
     cfg.emulation = true;
     cfg.mode = m5::nfc::NFC::A;
     _unit->config(cfg);
 
-    bool unit_ready = _units->add(*_unit, i2c) && _units->begin();
+    _units->add(*_unit, i2c);
+    bool unit_ready = _units->begin();
+    
+    _emu_a = std::make_unique<m5::nfc::EmulationLayerA>(*_unit);
+    
     if (!unit_ready) {
         ESP_LOGE(TAG, "Failed to begin M5UnitUnified (ST25R3916 not found)");
         _status = Status::Error;
         return false;
     }
     ESP_LOGI(TAG, "ST25R3916 found on In_I2C!");
+    return true;
+}
+
+bool Emulator::setAmiiboData(const uint8_t* bin_data, size_t bin_size)
+{
+    xSemaphoreTakeRecursive(_mutex, portMAX_DELAY);
+    ESP_LOGI(TAG, "Setting Amiibo BIN data (%u bytes)", bin_size);
+    
+    if (_status != Status::Idle) {
+        stop();
+        // Give the ST25R3916 chip time to process the stop command
+        for (int i = 0; i < 5; i++) {
+            if (_units) _units->update();
+            if (_emu_a) _emu_a->update();
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+    }
+    
+    // Completely recreate the emulation layer AND the UnitNFC to ensure clean state
+    if (_emu_a) _emu_a.reset();
+    if (_unit) _unit.reset();
+    if (_units) _units.reset();
+    
+    _units = std::make_unique<m5::unit::UnitUnified>();
+    _unit = std::make_unique<m5::unit::UnitNFC>();
+    
+    auto cfg = _unit->config();
+    cfg.emulation = true;
+    cfg.mode = m5::nfc::NFC::A;
+    _unit->config(cfg);
+    
+    _units->add(*_unit, _i2c);
+    _units->begin(); // Re-initialize the chip
+    
+    _emu_a = std::make_unique<m5::nfc::EmulationLayerA>(*_unit);
 
     // Setup PICC Memory from BIN file
     constexpr m5::nfc::a::Type type = m5::nfc::a::Type::NTAG_215;
@@ -142,58 +192,94 @@ bool Emulator::init(i2c_master_bus_handle_t i2c, const uint8_t* bin_data, size_t
     }
 
     _status = Status::Idle;
-    return true;
+    bool ret = start();
+    xSemaphoreGiveRecursive(_mutex);
+    return ret;
 }
 
 bool Emulator::start()
 {
-    if (!_unit || !_emu_a) return false;
-    
-    if (_emu_a->begin(_picc, _picc_memory, sizeof(_picc_memory))) {
-        ESP_LOGI(TAG, "Emulation started!");
-        _status = Status::Listening;
-        return true;
+    xSemaphoreTakeRecursive(_mutex, portMAX_DELAY);
+    if (!_unit || !_emu_a) {
+        xSemaphoreGiveRecursive(_mutex);
+        return false;
     }
-    ESP_LOGE(TAG, "Failed to start emulation layer!");
+    
+    ESP_LOGI(TAG, "Attempting to start emulation...");
+    
+    // Retry starting emulation if the NFC chip is still busy stopping
+    for (int i = 0; i < 5; i++) {
+        if (_emu_a->begin(_picc, _picc_memory, sizeof(_picc_memory))) {
+            ESP_LOGI(TAG, "Emulation started on try %d! Layer State: %d", i + 1, (int)_emu_a->state());
+            _status = Status::Listening;
+            xSemaphoreGiveRecursive(_mutex);
+            return true;
+        }
+        ESP_LOGW(TAG, "Failed to start emulation, retrying in 20ms...");
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    
+    ESP_LOGE(TAG, "Failed to start emulation layer after retries!");
+    xSemaphoreGiveRecursive(_mutex);
     return false;
 }
 
 void Emulator::stop()
 {
+    xSemaphoreTakeRecursive(_mutex, portMAX_DELAY);
+    ESP_LOGI(TAG, "Stopping emulation...");
     if (_emu_a) {
         _emu_a->end();
     }
     _status = Status::Idle;
+    xSemaphoreGiveRecursive(_mutex);
 }
 
 Status Emulator::getStatus()
 {
-    return _status;
+    xSemaphoreTakeRecursive(_mutex, portMAX_DELAY);
+    Status ret = _status;
+    xSemaphoreGiveRecursive(_mutex);
+    return ret;
 }
 
 void Emulator::update()
 {
-    if (!_units || !_emu_a) return;
+    xSemaphoreTakeRecursive(_mutex, portMAX_DELAY);
+    if (!_units || !_emu_a) {
+        xSemaphoreGiveRecursive(_mutex);
+        return;
+    }
     
     _units->update();
     _emu_a->update();
 
     auto layer_state = _emu_a->state();
     
+    static auto last_layer_state = m5::nfc::EmulationLayerA::State::None;
+    if (layer_state != last_layer_state) {
+        ESP_LOGI(TAG, "EmulationLayerA state changed: %d -> %d", (int)last_layer_state, (int)layer_state);
+        last_layer_state = layer_state;
+    }
+    
     switch (layer_state) {
         case m5::nfc::EmulationLayerA::State::None:
+            if (_status != Status::Idle) ESP_LOGW(TAG, "Layer state is None, transitioning status to Idle (Stopped)");
             _status = Status::Idle;
             break;
         case m5::nfc::EmulationLayerA::State::Off:
         case m5::nfc::EmulationLayerA::State::Idle:
+            if (_status != Status::Listening) ESP_LOGI(TAG, "Layer state is Off/Idle, transitioning status to Listening (Wait...)");
             _status = Status::Listening;
             break;
         case m5::nfc::EmulationLayerA::State::Ready:
         case m5::nfc::EmulationLayerA::State::Active:
         case m5::nfc::EmulationLayerA::State::Halt:
+            if (_status != Status::Selected) ESP_LOGI(TAG, "Layer state is Ready/Active/Halt, transitioning status to Selected");
             _status = Status::Selected;
             break;
     }
+    xSemaphoreGiveRecursive(_mutex);
 }
 
 } // namespace nfc_emu

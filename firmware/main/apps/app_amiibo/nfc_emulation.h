@@ -26,7 +26,8 @@ public:
     Emulator() = default;
     ~Emulator();
 
-    bool init(i2c_master_bus_handle_t i2c, const uint8_t* bin_data, size_t bin_size);
+    bool init(i2c_master_bus_handle_t i2c);
+    bool setAmiiboData(const uint8_t* bin_data, size_t bin_size);
     bool start();
     void stop();
     Status getStatus();
@@ -39,6 +40,8 @@ private:
     m5::nfc::a::PICC _picc;
     uint8_t _picc_memory[572];
     Status _status = Status::Idle;
+    i2c_master_bus_handle_t _i2c = nullptr;
+    SemaphoreHandle_t _mutex = nullptr;
 };
 
 } // namespace nfc_emu

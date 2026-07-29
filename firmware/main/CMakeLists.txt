@@ -268,6 +268,48 @@ file(GLOB AMIIBO_BINS
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/amiibo_bins/*.bin"
 )
 
+set(UI_AMIIBO_FILES ${AMIIBO_BINS})
+list(REMOVE_ITEM UI_AMIIBO_FILES 
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/amiibo_bins/locked-secret.bin"
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/amiibo_bins/unfixed-info.bin"
+)
+
+set(AMIIBO_LIST_H "${CMAKE_CURRENT_SOURCE_DIR}/apps/app_amiibo/amiibo_list.h")
+set(AMIIBO_LIST_CPP "${CMAKE_CURRENT_SOURCE_DIR}/apps/app_amiibo/amiibo_list.cpp")
+
+# Generate Header
+file(WRITE ${AMIIBO_LIST_H} "#pragma once\n#include <cstdint>\n#include <cstddef>\n\nstruct AmiiboFile {\n    const char* name;\n    const uint8_t* start;\n    size_t size;\n};\n\nextern const AmiiboFile amiibo_files[];\nextern const size_t amiibo_files_count;\n")
+
+# Generate CPP
+file(WRITE ${AMIIBO_LIST_CPP} "#include \"amiibo_list.h\"\n\n")
+set(AMIIBO_FILES_ARRAY "")
+set(AMIIBO_COUNT 0)
+
+foreach(BIN_FILE IN LISTS UI_AMIIBO_FILES)
+    get_filename_component(FILENAME ${BIN_FILE} NAME)
+    get_filename_component(NAME_NOEXT ${BIN_FILE} NAME_WE)
+    
+    string(REGEX REPLACE "[^a-zA-Z0-9]" "_" SYMBOL_NAME ${FILENAME})
+    set(SYMBOL "_binary_${SYMBOL_NAME}")
+    
+    file(APPEND ${AMIIBO_LIST_CPP} "extern const uint8_t ${SYMBOL}_start[] asm(\"${SYMBOL}_start\");\n")
+    file(APPEND ${AMIIBO_LIST_CPP} "extern const uint8_t ${SYMBOL}_end[] asm(\"${SYMBOL}_end\");\n")
+    
+    set(AMIIBO_FILES_ARRAY "${AMIIBO_FILES_ARRAY}    {\"${NAME_NOEXT}\", ${SYMBOL}_start, (size_t)(${SYMBOL}_end - ${SYMBOL}_start)},\n")
+    math(EXPR AMIIBO_COUNT "${AMIIBO_COUNT} + 1")
+endforeach()
+
+file(APPEND ${AMIIBO_LIST_CPP} "\nconst AmiiboFile amiibo_files[] = {\n")
+if(AMIIBO_COUNT GREATER 0)
+    file(APPEND ${AMIIBO_LIST_CPP} "${AMIIBO_FILES_ARRAY}")
+else()
+    file(APPEND ${AMIIBO_LIST_CPP} "    {nullptr, nullptr, 0}\n")
+endif()
+file(APPEND ${AMIIBO_LIST_CPP} "};\nconst size_t amiibo_files_count = ${AMIIBO_COUNT};\n")
+
+# Explicitly add the generated file to SOURCES because the initial GLOB_RECURSE ran before it existed
+list(APPEND SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/apps/app_amiibo/amiibo_list.cpp")
+
 
 # If target chip is ESP32, exclude specific files to avoid build errors
 if(CONFIG_IDF_TARGET_ESP32)
