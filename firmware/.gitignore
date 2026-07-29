@@ -22,6 +22,7 @@
 
 # Ignore generated amiibo bins and keys
 main/assets/amiibo_bins/*.bin
+main/apps/app_amiibo/amiibo_list.*
 
 # Compiled Static libraries
 *.lai
