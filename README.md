@@ -30,3 +30,19 @@ Thank you to the contributors of the StackChan community, especially:
 | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
 | [@stack_chan](https://x.com/stack_chan)                                          | [@mongonta555](https://x.com/mongonta555)                                   |
 | Shinya Ishikawa                                                                  | Takao Akaki                                                                 |
+
+## Custom Apps
+
+### Amiibo Emulator App
+The StackChan firmware includes a custom **Amiibo Emulator App** that leverages the built-in ST25R3916 NFC module to emulate Amiibo tags, allowing you to use StackChan as an Amiibo!
+
+#### How to use:
+1. Prepare your dumped Amiibo `.bin` files.
+2. Prepare the Amiibo decryption key files: `unfixed-info.bin` and `locked-secret.bin`.
+3. Place both your `.bin` files and the two key files into the `firmware/main/assets/amiibo_bins/` directory.
+   *(Note: The system automatically generates a list of these files at build time and embeds the keys securely.)*
+4. Build and flash the firmware to your StackChan.
+5. Launch the Amiibo app from the StackChan menu.
+6. Select the Amiibo you want to emulate from the scrollable list.
+7. When the screen says **"Wait..."**, hold your smartphone or Nintendo Switch over StackChan's NFC reading area to scan it!
+   > 💡 **Reading tip:** The scanning position is quite strict. Hold the controller stick (the NFC reading area) close to the IR LED on top of the Stack-chan and gently move it back and forth a little to find the best position.
