@@ -5,38 +5,44 @@
  */
 #include "nfc_emulation.h"
 #include <esp_log.h>
-#include <cstring>
+#include <string.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <hal/board/hal_bridge.h>
 
-static const char* TAG = "NFC_EMU";
+#include <assets.h>
+extern "C" {
+#include "amiitool/nfc3d/amiibo.h"
+}
+
+static const char* TAG = "app_amiibo";
 
 namespace nfc_emu {
 
-static uint8_t bcc8(const uint8_t* p, const uint8_t len, const uint8_t init = 0)
-{
-    uint8_t v = init;
-    for (uint_fast8_t i = 0; i < len; ++i) {
-        v ^= p[i];
-    }
-    return v;
-}
+// A standard NTAG215 UID prefix (NXP) and some random bytes
+static const uint8_t dummy_uid[7] = {0x04, 0x1A, 0x2B, 0x3C, 0x4D, 0x5E, 0x6F};
 
-static void embed_uid(uint8_t mem[9], const uint8_t uid[7])
-{
-    memcpy(mem, uid, 3);
-    mem[3] = bcc8(uid, 3, 0x88);
-    memcpy(mem + 4, uid + 3, 4);
-    mem[8] = bcc8(uid + 3, 4);
-}
+// A dummy signature to prevent the Switch from completely rejecting it at the NFC layer
+static const uint8_t dummy_signature[32] = {
+    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+    0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
+    0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+    0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF
+};
 
 Emulator::~Emulator()
 {
     stop();
 }
 
-bool Emulator::init(i2c_master_bus_handle_t i2c, const char* url)
+extern const uint8_t locked_secret_bin_start[] asm("_binary_locked_secret_bin_start");
+extern const uint8_t locked_secret_bin_end[]   asm("_binary_locked_secret_bin_end");
+extern const uint8_t unfixed_info_bin_start[]  asm("_binary_unfixed_info_bin_start");
+extern const uint8_t unfixed_info_bin_end[]    asm("_binary_unfixed_info_bin_end");
+
+bool Emulator::init(i2c_master_bus_handle_t i2c, const uint8_t* bin_data, size_t bin_size)
 {
-    ESP_LOGI(TAG, "Initializing Emulator with URL: %s", url);
+    ESP_LOGI(TAG, "Initializing Emulator with Amiibo BIN data (%u bytes)", bin_size);
 
     if (!i2c) {
         ESP_LOGE(TAG, "I2C bus is null");
@@ -60,34 +66,79 @@ bool Emulator::init(i2c_master_bus_handle_t i2c, const char* url)
     }
     ESP_LOGI(TAG, "ST25R3916 found on In_I2C!");
 
-    // Setup PICC Memory (NDEF URI)
-    constexpr m5::nfc::a::Type type = m5::nfc::a::Type::MIFARE_Ultralight;
-    constexpr uint8_t default_uid[] = {0x04, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE};
-
+    // Setup PICC Memory from BIN file
+    constexpr m5::nfc::a::Type type = m5::nfc::a::Type::NTAG_215;
+    
+    if (bin_size > sizeof(_picc_memory)) {
+        bin_size = sizeof(_picc_memory);
+    }
+    
     memset(_picc_memory, 0, sizeof(_picc_memory));
-    
-    // Create NDEF Message
-    size_t url_len = strlen(url);
-    if (url_len > 40) url_len = 40;
+    if (bin_data) {
+        memcpy(_picc_memory, bin_data, bin_size);
+    }
 
-    _picc_memory[12] = 0xE1;
-    _picc_memory[13] = 0x10;
-    _picc_memory[14] = 0x06;
-    _picc_memory[15] = 0x00;
-    
-    _picc_memory[16] = 0x03; // NDEF Message
-    _picc_memory[17] = url_len + 5; // Length
-    _picc_memory[18] = 0xD1; // NDEF Record Header
-    _picc_memory[19] = 0x01; // Type Length
-    _picc_memory[20] = url_len + 1; // Payload Length
-    _picc_memory[21] = 0x55; // 'U' (URI)
-    _picc_memory[22] = 0x00; // No prefix
-    
-    memcpy(&_picc_memory[23], url, url_len);
-    _picc_memory[23 + url_len] = 0xFE; // Terminator
+    if (bin_size >= 520) {
+        // Load keys from embedded binaries
+        size_t locked_size = locked_secret_bin_end - locked_secret_bin_start;
+        size_t unfixed_size = unfixed_info_bin_end - unfixed_info_bin_start;
+        
+        if (locked_size == 80 && unfixed_size == 80) {
+            ESP_LOGI(TAG, "Loaded key files from embedded binaries successfully.");
+            
+            // Dynamic Re-encryption
+            nfc3d_amiibo_keys keys;
+            memcpy(&keys.tag, locked_secret_bin_start, 80);
+            memcpy(&keys.data, unfixed_info_bin_start, 80);
 
-    if (_picc.emulate(type, default_uid, sizeof(default_uid))) {
-        embed_uid(_picc_memory, default_uid);
+            uint8_t plain[NFC3D_AMIIBO_SIZE];
+            if (nfc3d_amiibo_unpack(&keys, _picc_memory, plain)) {
+                ESP_LOGI(TAG, "Amiibo data unpacked successfully.");
+                
+                // First update plain data with the dummy UID
+                plain[0x1D4 + 0] = dummy_uid[0];
+                plain[0x1D4 + 1] = dummy_uid[1];
+                plain[0x1D4 + 2] = dummy_uid[2];
+                // BCC0
+                plain[0x1D4 + 3] = 0x88 ^ dummy_uid[0] ^ dummy_uid[1] ^ dummy_uid[2]; 
+                plain[0x1D4 + 4] = dummy_uid[3];
+                plain[0x1D4 + 5] = dummy_uid[4];
+                plain[0x1D4 + 6] = dummy_uid[5];
+                plain[0x1D4 + 7] = dummy_uid[6];
+
+                // Pack the modified data back into _picc_memory
+                nfc3d_amiibo_pack(&keys, plain, _picc_memory);
+                ESP_LOGI(TAG, "Amiibo data packed with dummy UID.");
+                
+                // Ensure the BCC1 in block 1 (byte 4) is correct for the dummy UID
+                _picc_memory[8] = dummy_uid[3] ^ dummy_uid[4] ^ dummy_uid[5] ^ dummy_uid[6]; // BCC1
+                
+                // Calculate and set the correct password for the dummy UID
+                _picc_memory[532] = 0xAA ^ dummy_uid[1] ^ dummy_uid[3];
+                _picc_memory[533] = 0x55 ^ dummy_uid[2] ^ dummy_uid[4];
+                _picc_memory[534] = 0xAA ^ dummy_uid[3] ^ dummy_uid[5];
+                _picc_memory[535] = 0x55 ^ dummy_uid[4] ^ dummy_uid[6];
+                _picc_memory[536] = 0x80; // PACK0
+                _picc_memory[537] = 0x80; // PACK1
+                _picc_memory[538] = 0x00; // RFUI
+                _picc_memory[539] = 0x00; // RFUI
+            } else {
+                ESP_LOGE(TAG, "Failed to unpack Amiibo data. Using raw BIN.");
+            }
+        } else {
+            ESP_LOGE(TAG, "Invalid key sizes: locked=%u, unfixed=%u", locked_size, unfixed_size);
+        }
+    }
+
+    uint8_t uid[7] = {0};
+    memcpy(uid, dummy_uid, sizeof(uid));
+    
+    // Copy the dummy signature to the end of the memory buffer
+    memcpy(&_picc_memory[540], dummy_signature, sizeof(dummy_signature));
+
+    if (_picc.emulate(type, uid, sizeof(uid))) {
+        _picc.atqa = 0x0044; // ATQA for NTAG215
+        _picc.sak  = 0x00;   // SAK for NTAG215 (Type 2 Tag)
     }
 
     _status = Status::Idle;

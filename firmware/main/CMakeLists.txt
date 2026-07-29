@@ -17,6 +17,7 @@ file(GLOB_RECURSE STACK_CHAN_SOURCES
 )
 set(STACK_CHAN_INCLUDE_DIRS 
     "."
+    "apps/app_amiibo/amiitool"
 )
 list(APPEND STACK_CHAN_SOURCES main.cpp)
 
@@ -263,6 +264,11 @@ file(GLOB COMMON_SOUNDS
     assets/sfx/*.ogg
 )
 
+file(GLOB AMIIBO_BINS
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/amiibo_bins/*.bin"
+)
+
+
 # If target chip is ESP32, exclude specific files to avoid build errors
 if(CONFIG_IDF_TARGET_ESP32)
     list(REMOVE_ITEM SOURCES "audio/codecs/box_audio_codec.cc"
@@ -290,7 +296,7 @@ if(CONFIG_IDF_TARGET_ESP32S3)
 endif()
 
 idf_component_register(SRCS ${SOURCES}
-                    EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS}
+                    EMBED_FILES ${LANG_SOUNDS} ${COMMON_SOUNDS} ${AMIIBO_BINS}
                     INCLUDE_DIRS ${INCLUDE_DIRS}
                     WHOLE_ARCHIVE
                     PRIV_REQUIRES
@@ -316,6 +322,7 @@ idf_component_register(SRCS ${SOURCES}
                         mooncake
                         mooncake_log
                         smooth_ui_toolkit
+                        mbedtls
                     )
 
 # Use target_compile_definitions to define BOARD_TYPE, BOARD_NAME

@@ -19,8 +19,6 @@
 using namespace mooncake;
 using namespace smooth_ui_toolkit::lvgl_cpp;
 
-static const char* kTargetUrl = "https://x.com/syu_chan_1005";
-
 static std::unique_ptr<nfc_emu::Emulator> _emulator;
 
 static std::unique_ptr<Button> _button_quit;
@@ -66,6 +64,9 @@ static void updateStatusLabel(nfc_emu::Status status)
     }
 }
 
+extern const uint8_t inkling_boy_bin_start[] asm("_binary_Inkling_Boy_bin_start");
+extern const uint8_t inkling_boy_bin_end[] asm("_binary_Inkling_Boy_bin_end");
+
 void AppAmiibo::onOpen()
 {
     mclog::tagInfo(getAppInfo().name, "on open");
@@ -83,7 +84,7 @@ void AppAmiibo::onOpen()
 
         _label_url = std::make_unique<Label>(lv_screen_active());
         _label_url->align(LV_ALIGN_CENTER, 0, 0);
-        _label_url->setText("x.com/syu_chan_1005");
+        _label_url->setText("Inkling Boy.bin");
 
         _button_quit = std::make_unique<Button>(lv_screen_active());
         _button_quit->align(LV_ALIGN_BOTTOM_MID, 0, -20);
@@ -96,7 +97,8 @@ void AppAmiibo::onOpen()
     _emulator = std::make_unique<nfc_emu::Emulator>();
 
     auto internal_bus = hal_bridge::board_get_i2c_bus();
-    if (!_emulator->init(internal_bus, kTargetUrl)) {
+    size_t bin_size = inkling_boy_bin_end - inkling_boy_bin_start;
+    if (!_emulator->init(internal_bus, inkling_boy_bin_start, bin_size)) {
         mclog::tagError(getAppInfo().name, "Emulator init failed");
         _last_status = nfc_emu::Status::Error;
         updateStatusLabel(_last_status);
@@ -112,7 +114,7 @@ void AppAmiibo::onOpen()
 
     _last_status = nfc_emu::Status::Listening;
     updateStatusLabel(_last_status);
-    mclog::tagInfo(getAppInfo().name, "NFC emulation started: %s", kTargetUrl);
+    mclog::tagInfo(getAppInfo().name, "NFC emulation started: Inkling_Boy.bin");
 }
 
 void AppAmiibo::onRunning()
@@ -135,9 +137,9 @@ void AppAmiibo::onClose()
 
     if (_emulator) {
         _emulator->stop();
+        _emulator.reset();
     }
-    _emulator.reset();
-
+    
     LvglLockGuard lock;
     _label_title.reset();
     _label_status.reset();

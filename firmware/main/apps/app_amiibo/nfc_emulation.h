@@ -26,7 +26,7 @@ public:
     Emulator() = default;
     ~Emulator();
 
-    bool init(i2c_master_bus_handle_t i2c, const char* url);
+    bool init(i2c_master_bus_handle_t i2c, const uint8_t* bin_data, size_t bin_size);
     bool start();
     void stop();
     Status getStatus();
@@ -37,7 +37,7 @@ private:
     std::unique_ptr<m5::unit::UnitNFC> _unit;
     std::unique_ptr<m5::nfc::EmulationLayerA> _emu_a;
     m5::nfc::a::PICC _picc;
-    uint8_t _picc_memory[16 * 4];
+    uint8_t _picc_memory[572];
     Status _status = Status::Idle;
 };
 
